@@ -20,6 +20,7 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.SolrInputField;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.core.CloseHook;
@@ -38,6 +39,8 @@ import uk.co.flax.biosolr.ontology.core.*;
 import uk.co.flax.biosolr.solr.ontology.*;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -426,15 +429,24 @@ public class OntologyUpdateProcessorFactory extends UpdateRequestProcessorFactor
 				try {
 					// Look up ontology data for document
 					OntologyHelper helper = initialiseHelper();
-					String iri = (String)cmd.getSolrInputDocument().getFieldValue(getAnnotationField());
-
-					if (StringUtils.isNotBlank(iri)) {
-						OntologyData data = findOntologyData(helper, iri);
-
-						if (data == null) {
-							LOGGER.debug("Cannot find OWL class for IRI {}", iri);
-						} else {
-							addDataToSolrDoc(cmd.getSolrInputDocument(), data);
+					
+					SolrInputDocument inputDocument = cmd.getSolrInputDocument();
+					
+					SolrInputField inputField = inputDocument.getField(getAnnotationField());
+					if (inputField != null) {
+						for (Object iriObject : inputField.getValues()) {
+						
+							String iri = (String)iriObject;
+		
+							if (StringUtils.isNotBlank(iri)) {
+								OntologyData data = findOntologyData(helper, iri);
+		
+								if (data == null) {
+									LOGGER.debug("Cannot find OWL class for IRI {}", iri);
+								} else {
+									addDataToSolrDoc(inputDocument, data);
+								}
+							}
 						}
 					}
 				} catch (OntologyHelperException e) {
@@ -467,37 +479,65 @@ public class OntologyUpdateProcessorFactory extends UpdateRequestProcessorFactor
 		}
 
 		private void addDataToSolrDoc(SolrInputDocument doc, OntologyData data) {
-			doc.addField(getLabelField(), data.getLabels());
+			
+			
+			addFieldDataToSolrDoc(doc, getLabelField(), data.getLabels());
 			if (includeSynonyms() && data.hasSynonyms()) {
-				doc.addField(getSynonymsField(), data.getSynonyms());
+				addFieldDataToSolrDoc(doc, getSynonymsField(), data.getSynonyms());
 			}
 			if (includeDefinitions() && data.hasDefinitions()) {
-				doc.addField(getDefinitionField(), data.getDefinitions());
+				addFieldDataToSolrDoc(doc, getDefinitionField(), data.getDefinitions());
 			}
 
 			// Add child and parent URIs and labels
-			doc.addField(getChildUriField(), data.getChildIris());
-			doc.addField(getChildLabelField(), data.getChildLabels());
-			doc.addField(getParentUriField(), data.getParentIris());
-			doc.addField(getParentLabelField(), data.getParentLabels());
+			addFieldDataToSolrDoc(doc, getChildUriField(), data.getChildIris());
+			addFieldDataToSolrDoc(doc, getChildLabelField(), data.getChildLabels());
+			addFieldDataToSolrDoc(doc, getParentUriField(), data.getParentIris());
+			addFieldDataToSolrDoc(doc, getParentLabelField(), data.getParentLabels());
 
 			if (isIncludeIndirect()) {
 				// Add descendant and ancestor URIs and labels
-				doc.addField(getDescendantUriField(), data.getDescendantIris());
-				doc.addField(getDescendantLabelField(), data.getDescendantLabels());
-				doc.addField(getAncestorUriField(), data.getAncestorIris());
-				doc.addField(getAncestorLabelField(), data.getAncestorLabels());
+				addFieldDataToSolrDoc(doc, getDescendantUriField(), data.getDescendantIris());
+				addFieldDataToSolrDoc(doc, getDescendantLabelField(), data.getDescendantLabels());
+				addFieldDataToSolrDoc(doc, getAncestorUriField(), data.getAncestorIris());
+				addFieldDataToSolrDoc(doc, getAncestorLabelField(), data.getAncestorLabels());
 			}
 
 			if (isIncludeRelations()) {
 				for (String relation : data.getRelationIris().keySet()) {
-					doc.addField(buildRelationUriFieldName(relation), data.getRelationIris().get(relation));
-					doc.addField(buildRelationLabelFieldName(relation), data.getRelationLabels().get(relation));
+					addFieldDataToSolrDoc(doc, buildRelationUriFieldName(relation), data.getRelationIris().get(relation));
+					addFieldDataToSolrDoc(doc, buildRelationLabelFieldName(relation), data.getRelationLabels().get(relation));
 				}
 			}
 
 			if (isIncludeParentPaths()) {
-				doc.addField(getParentPathsField(), data.getParentPaths());
+				addFieldDataToSolrDoc(doc, getParentPathsField(), data.getParentPaths());
+			}
+		}
+		
+		private void addFieldDataToSolrDoc(SolrInputDocument doc, String fieldName, Collection<String> fieldData) {
+			SolrInputField field = doc.getField(fieldName);
+			if (field == null) {
+				//field does not exist, create a new one as a collection of strings
+				Collection<String> fieldDataCollection = new ArrayList<>();
+				fieldDataCollection.addAll(fieldData);
+				doc.addField(fieldName, fieldDataCollection);
+			} else {
+				//field already exists, add data into it
+				for (String data : fieldData) {
+					//check if the data is already present, avoid duplication
+					boolean isPresent = false;
+					for(Object obj : field.getValues()) {
+						String oldData = (String) obj;
+						if (data.equals(oldData)) {
+							isPresent = true;
+							break;
+						}
+					}
+					if (!isPresent) {
+						field.addValue(data, 1.0f);
+					}
+				}
 			}
 		}
 
